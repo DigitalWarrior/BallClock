@@ -1,0 +1,204 @@
+#include <WiFi.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <Timezone.h>
+
+struct Config {
+    const char* ssid = "YOUR_WIFI_SSID";
+    const char* password = "YOUR_WIFI_PASSWORD";
+    const char* ntpServer = "132.163.96.1"; // time.nist.gov If you have a local NTP server change the IP address here
+    const long gmtOffset_sec = 0;
+    
+    // US Eastern Time Zone (change rules for your location)
+    TimeChangeRule EDT = {"EDT", Second, Sun, Mar, 2, -240};  // UTC-4h
+    TimeChangeRule EST = {"EST", First, Sun, Nov, 2, -300};   // UTC-5h
+    
+    const unsigned long ntpUpdateInterval = 3600000;
+    
+    const struct {
+        const int IN1 = 2;
+        const int IN2 = 3;
+        const int IN3 = 4;
+        const int IN4 = 5;
+        const int stepsPerRevolution = 2048;
+        const int revolutionsPerMinute = 2;
+        const int numSteps = 8;
+    } motor;
+    
+    const int statusLed = 13;
+} config;
+
+class StepperMotor {
+private:
+    const int stepSequence[8][4] = {
+        {1, 0, 0, 0}, {1, 1, 0, 0}, {0, 1, 0, 0}, {0, 1, 1, 0},
+        {0, 0, 1, 0}, {0, 0, 1, 1}, {0, 0, 0, 1}, {1, 0, 0, 1}
+    };
+    int currentStep = 0;
+    unsigned long lastStepTime = 0;
+    const int stepDelay;
+
+public:
+    StepperMotor() : stepDelay(60000 / (config.motor.stepsPerRevolution * config.motor.revolutionsPerMinute)) {
+        pinMode(config.motor.IN1, OUTPUT);
+        pinMode(config.motor.IN2, OUTPUT);
+        pinMode(config.motor.IN3, OUTPUT);
+        pinMode(config.motor.IN4, OUTPUT);
+    }
+
+    void step() {
+        if (millis() - lastStepTime >= stepDelay) {
+            digitalWrite(config.motor.IN1, stepSequence[currentStep][0]);
+            digitalWrite(config.motor.IN2, stepSequence[currentStep][1]);
+            digitalWrite(config.motor.IN3, stepSequence[currentStep][2]);
+            digitalWrite(config.motor.IN4, stepSequence[currentStep][3]);
+            
+            currentStep = (currentStep + 1) % config.motor.numSteps;
+            lastStepTime = millis();
+        }
+    }
+};
+
+class WiFiManager {
+private:
+    unsigned long lastWiFiCheck = 0;
+    const unsigned long checkInterval = 30000;
+    bool isEnabled = true;
+
+public:
+    void disable() { isEnabled = false; }
+    void enable() { isEnabled = true; }
+    
+    bool connect() {
+        if (!isEnabled) return false;
+        
+        WiFi.begin(config.ssid, config.password);
+        
+        int attempts = 0;
+        while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+            delay(500);
+            attempts++;
+        }
+        
+        return WiFi.status() == WL_CONNECTED;
+    }
+    
+    bool checkConnection() {
+        if (!isEnabled) return false;
+        
+        if (millis() - lastWiFiCheck >= checkInterval) {
+            if (WiFi.status() != WL_CONNECTED) {
+                return connect();
+            }
+            lastWiFiCheck = millis();
+        }
+        return WiFi.status() == WL_CONNECTED;
+    }
+};
+
+class TimeManager {
+private:
+    WiFiUDP ntpUDP;
+    NTPClient timeClient;
+    Timezone timezone;
+    unsigned long lastUpdate = 0;
+    unsigned long lastSyncMillis = 0;
+    bool hasInitialSync = false;
+    time_t localTime;
+
+public:
+    TimeManager() : 
+        timeClient(ntpUDP, config.ntpServer, config.gmtOffset_sec),
+        timezone(config.EDT, config.EST) {}
+    
+    void begin() {
+        timeClient.begin();
+    }
+    
+    bool update(bool wifiConnected) {
+        if (wifiConnected) {
+            if (millis() - lastUpdate >= config.ntpUpdateInterval) {
+                if (timeClient.update()) {
+                    time_t utc = timeClient.getEpochTime();
+                    localTime = timezone.toLocal(utc);
+                    lastUpdate = millis();
+                    lastSyncMillis = millis();
+                    hasInitialSync = true;
+                    return true;
+                }
+            }
+        } else if (hasInitialSync) {
+            // When offline, use internal timing with DST awareness
+            time_t utc = timeClient.getEpochTime() + ((millis() - lastSyncMillis) / 1000);
+            localTime = timezone.toLocal(utc);
+            lastSyncMillis = millis();
+            return true;
+        }
+        return false;
+    }
+    
+    bool isTimeValid() {
+        return hasInitialSync;
+    }
+    
+    bool isDST() {
+        return timezone.locIsDST(localTime);
+    }
+};
+
+WiFiManager wifiManager;
+TimeManager timeManager;
+StepperMotor motor;
+
+void indicateStatus(bool wifiConnected, bool timeValid) {
+    static unsigned long lastBlink = 0;
+    static bool ledState = false;
+    
+    if (wifiConnected && timeValid) {
+        if (timeManager.isDST()) {
+            // Double blink for DST
+            if (millis() - lastBlink >= 2000) {
+                digitalWrite(config.statusLed, HIGH);
+                delay(100);
+                digitalWrite(config.statusLed, LOW);
+                delay(100);
+                digitalWrite(config.statusLed, HIGH);
+                delay(100);
+                digitalWrite(config.statusLed, LOW);
+                lastBlink = millis();
+            }
+        } else {
+            digitalWrite(config.statusLed, HIGH);  // Solid for standard time
+        }
+    } else if (timeValid) {
+        digitalWrite(config.statusLed, ledState);  // Slow blink = offline
+        if (millis() - lastBlink >= 1000) {
+            ledState = !ledState;
+            lastBlink = millis();
+        }
+    } else {
+        digitalWrite(config.statusLed, ledState);  // Fast blink = no time sync
+        if (millis() - lastBlink >= 200) {
+            ledState = !ledState;
+            lastBlink = millis();
+        }
+    }
+}
+
+void setup() {
+    pinMode(config.statusLed, OUTPUT);
+    
+    if (!wifiManager.connect()) {
+        wifiManager.disable();
+    }
+    
+    timeManager.begin();
+}
+
+void loop() {
+    bool wifiConnected = wifiManager.checkConnection();
+    bool timeValid = timeManager.update(wifiConnected);
+    
+    indicateStatus(wifiConnected, timeValid);
+    motor.step();
+}

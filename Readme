@@ -1,0 +1,87 @@
+# ESP32-C3 Stepper Motor Controller
+
+ESP32-C3 based controller for 28BYJ-48 stepper motor with NTP time synchronization and automatic DST handling.
+
+## Features
+- Stepper motor control (2 RPM)
+- NTP time sync with DST adjustment
+- Offline operation
+- Status monitoring via onboard LED
+- Auto WiFi reconnection
+
+## Hardware Requirements
+- ESP32-C3 microcontroller
+- 28BYJ-48 5V stepper motor
+- ULN2003 driver board
+- 5V power supply
+
+### Pinout
+
+```
+Motor Driver (ULN2003):
+┌────────────┬───────────┐
+│ ULN2003    │ ESP32-C3  │
+├────────────┼───────────┤
+│ IN1        │ GPIO 2    │
+│ IN2        │ GPIO 3    │
+│ IN3        │ GPIO 4    │
+│ IN4        │ GPIO 5    │
+│ VCC        │ 5V        │
+│ GND        │ GND       │
+└────────────┴───────────┘
+
+Status LED: Onboard LED (GPIO 13)
+NOTE: This project uses the built-in LED on the ESP32-C3 board
+```
+
+### Status Codes (Onboard LED)
+```
+┌──────────────────┬────────────────────────────┐
+│ Pattern          │ Status                     │
+├──────────────────┼────────────────────────────┤
+│ Solid ON         │ Online, Time Sync (STD)    │
+│ Double Blink/2s  │ Online, Time Sync (DST)    │
+│ Slow Blink (1s)  │ Offline, Time Keeping      │
+│ Fast Blink (0.2s)│ No Time Sync              │
+└──────────────────┴────────────────────────────┘
+```
+
+## Software Dependencies
+- Arduino IDE
+- ESP32 Board Support
+  ```
+  https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+  ```
+- Libraries:
+  - WiFi.h (built-in)
+  - NTPClient
+  - Timezone (by Jack Christensen)
+
+## Setup
+1. Install Arduino IDE
+2. Add ESP32 board URL in preferences
+3. Install required libraries
+4. Board settings:
+   - Board: "ESP32C3 Dev Module"
+   - Upload Speed: 921600
+   - Flash Size: 4MB
+   - Partition: Default 4MB with spiffs
+   - Flash Mode: DIO
+## Configuration
+```cpp
+// WiFi Settings
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+const char* ntpServer = "YOUR_LOCAL_NTP_SERVER";
+
+// Timezone (Example: US Eastern)
+TimeChangeRule EDT = {"EDT", Second, Sun, Mar, 2, -240};  // UTC-4h
+TimeChangeRule EST = {"EST", First, Sun, Nov, 2, -300};   // UTC-5h
+```
+
+## License
+MIT License
+
+## Acknowledgments
+- ESP32 Arduino Core
+- Jack Christensen (Timezone library)

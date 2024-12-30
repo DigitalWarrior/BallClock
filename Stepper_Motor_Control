@@ -6,14 +6,14 @@
 struct Config {
     const char* ssid = "YOUR_WIFI_SSID";
     const char* password = "YOUR_WIFI_PASSWORD";
-    const char* ntpServer = "132.163.96.1"; // time.nist.gov If you have a local NTP server change the IP address here
+    const char* ntpServer = "132.163.96.1"; // NIST Internet Time Service update to you local one. 
     const long gmtOffset_sec = 0;
     
-    // US Eastern Time Zone (change rules for your location)
-    TimeChangeRule EDT = {"EDT", Second, Sun, Mar, 2, -240};  // UTC-4h
-    TimeChangeRule EST = {"EST", First, Sun, Nov, 2, -300};   // UTC-5h
+    TimeChangeRule EDT = {"EDT", Second, Sun, Mar, 2, -240};
+    TimeChangeRule EST = {"EST", First, Sun, Nov, 2, -300};
     
     const unsigned long ntpUpdateInterval = 3600000;
+    const unsigned long timeDisplayInterval = 1000;
     
     const struct {
         const int IN1 = 2;
@@ -26,6 +26,7 @@ struct Config {
     } motor;
     
     const int statusLed = 13;
+    const int ntpStatusLed = 12;
 } config;
 
 class StepperMotor {
@@ -66,21 +67,38 @@ private:
     bool isEnabled = true;
 
 public:
-    void disable() { isEnabled = false; }
-    void enable() { isEnabled = true; }
+    void disable() { 
+        isEnabled = false; 
+        Serial.println("WiFi disabled");
+    }
+    
+    void enable() { 
+        isEnabled = true; 
+        Serial.println("WiFi enabled");
+    }
     
     bool connect() {
         if (!isEnabled) return false;
         
+        Serial.print("Connecting to WiFi");
         WiFi.begin(config.ssid, config.password);
         
         int attempts = 0;
         while (WiFi.status() != WL_CONNECTED && attempts < 20) {
             delay(500);
+            Serial.print(".");
             attempts++;
         }
         
-        return WiFi.status() == WL_CONNECTED;
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("\nWiFi connected successfully");
+            Serial.print("IP Address: ");
+            Serial.println(WiFi.localIP());
+            return true;
+        } else {
+            Serial.println("\nWiFi connection failed");
+            return false;
+        }
     }
     
     bool checkConnection() {
@@ -88,6 +106,7 @@ public:
         
         if (millis() - lastWiFiCheck >= checkInterval) {
             if (WiFi.status() != WL_CONNECTED) {
+                Serial.println("WiFi connection lost. Attempting to reconnect...");
                 return connect();
             }
             lastWiFiCheck = millis();
@@ -103,7 +122,11 @@ private:
     Timezone timezone;
     unsigned long lastUpdate = 0;
     unsigned long lastSyncMillis = 0;
+    unsigned long lastTimeDisplay = 0;
+    unsigned long lastNtpLedUpdate = 0;
     bool hasInitialSync = false;
+    bool usingNTP = false;
+    bool lastNtpUpdateSuccess = false;
     time_t localTime;
 
 public:
@@ -113,28 +136,83 @@ public:
     
     void begin() {
         timeClient.begin();
+        Serial.println("Time manager initialized");
+    }
+
+    bool syncNTP() {
+        Serial.println("Connecting to NTP server...");
+        
+        if (timeClient.update()) {
+            time_t utc = timeClient.getEpochTime();
+            localTime = timezone.toLocal(utc);
+            lastUpdate = millis();
+            lastSyncMillis = millis();
+            hasInitialSync = true;
+            usingNTP = true;
+            lastNtpUpdateSuccess = true;
+            Serial.println("NTP synchronization successful");
+            return true;
+        }
+        
+        lastNtpUpdateSuccess = false;
+        Serial.println("NTP synchronization failed");
+        return false;
+    }
+    
+    void updateNtpLed() {
+        static bool ledState = false;
+        unsigned long currentMillis = millis();
+        
+        if (lastNtpUpdateSuccess) {
+            // Blink every second when NTP sync successful
+            if (currentMillis - lastNtpLedUpdate >= 1000) {
+                ledState = !ledState;
+                digitalWrite(config.ntpStatusLed, ledState);
+                lastNtpLedUpdate = currentMillis;
+            }
+        } else {
+            // Fast blink every 0.2 seconds when NTP failed
+            if (currentMillis - lastNtpLedUpdate >= 200) {
+                ledState = !ledState;
+                digitalWrite(config.ntpStatusLed, ledState);
+                lastNtpLedUpdate = currentMillis;
+            }
+        }
     }
     
     bool update(bool wifiConnected) {
         if (wifiConnected) {
             if (millis() - lastUpdate >= config.ntpUpdateInterval) {
-                if (timeClient.update()) {
-                    time_t utc = timeClient.getEpochTime();
-                    localTime = timezone.toLocal(utc);
-                    lastUpdate = millis();
-                    lastSyncMillis = millis();
-                    hasInitialSync = true;
-                    return true;
-                }
+                syncNTP();
             }
         } else if (hasInitialSync) {
-            // When offline, use internal timing with DST awareness
             time_t utc = timeClient.getEpochTime() + ((millis() - lastSyncMillis) / 1000);
             localTime = timezone.toLocal(utc);
             lastSyncMillis = millis();
+            usingNTP = false;
             return true;
         }
-        return false;
+
+        updateNtpLed();
+        displayTime();
+        return hasInitialSync;
+    }
+    
+    void displayTime() {
+        if (millis() - lastTimeDisplay >= config.timeDisplayInterval) {
+            time_t t = timeClient.getEpochTime();
+            int hours = (t % 86400L) / 3600;
+            int minutes = (t % 3600) / 60;
+            int seconds = t % 60;
+            
+            char timeStr[40];
+            sprintf(timeStr, "Time: %02d:%02d:%02d [%s]", 
+                hours, minutes, seconds, 
+                usingNTP ? "NTP" : "Internal");
+            Serial.println(timeStr);
+            
+            lastTimeDisplay = millis();
+        }
     }
     
     bool isTimeValid() {
@@ -153,42 +231,41 @@ StepperMotor motor;
 void indicateStatus(bool wifiConnected, bool timeValid) {
     static unsigned long lastBlink = 0;
     static bool ledState = false;
+    unsigned long currentMillis = millis();
     
     if (wifiConnected && timeValid) {
         if (timeManager.isDST()) {
-            // Double blink for DST
-            if (millis() - lastBlink >= 2000) {
-                digitalWrite(config.statusLed, HIGH);
-                delay(100);
-                digitalWrite(config.statusLed, LOW);
-                delay(100);
-                digitalWrite(config.statusLed, HIGH);
-                delay(100);
-                digitalWrite(config.statusLed, LOW);
-                lastBlink = millis();
+            // Blink twice per second for DST
+            if (currentMillis - lastBlink >= 500) {
+                ledState = !ledState;
+                digitalWrite(config.statusLed, ledState);
+                lastBlink = currentMillis;
             }
         } else {
-            digitalWrite(config.statusLed, HIGH);  // Solid for standard time
-        }
-    } else if (timeValid) {
-        digitalWrite(config.statusLed, ledState);  // Slow blink = offline
-        if (millis() - lastBlink >= 1000) {
-            ledState = !ledState;
-            lastBlink = millis();
+            // Solid ON for standard time
+            digitalWrite(config.statusLed, HIGH);
         }
     } else {
-        digitalWrite(config.statusLed, ledState);  // Fast blink = no time sync
-        if (millis() - lastBlink >= 200) {
+        // Blink every 2 seconds when not connected
+        if (currentMillis - lastBlink >= 2000) {
             ledState = !ledState;
-            lastBlink = millis();
+            digitalWrite(config.statusLed, ledState);
+            lastBlink = currentMillis;
         }
     }
 }
 
 void setup() {
-    pinMode(config.statusLed, OUTPUT);
+    Serial.begin(115200);
+    Serial.println("ESP32-C3 Stepper Motor Controller booted successfully");
     
-    if (!wifiManager.connect()) {
+    pinMode(config.statusLed, OUTPUT);
+    pinMode(config.ntpStatusLed, OUTPUT);
+    digitalWrite(config.ntpStatusLed, LOW);
+    
+    if (wifiManager.connect()) {
+        timeManager.syncNTP();
+    } else {
         wifiManager.disable();
     }
     

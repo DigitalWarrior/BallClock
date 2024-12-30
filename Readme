@@ -1,13 +1,18 @@
 # ESP32-C3 Stepper Motor Controller
 
+Created by: Claude (Anthropic)
+Version: 1.0.0
+Date: 2024-12-30
+
 ESP32-C3 based controller for 28BYJ-48 stepper motor with NTP time synchronization and automatic DST handling.
 
 ## Features
 - Stepper motor control (2 RPM)
 - NTP time sync with DST adjustment
-- Offline operation
-- Status monitoring via onboard LED
+- Offline time keeping
+- Dual LED status indicators
 - Auto WiFi reconnection
+- Serial monitoring (115200 baud)
 
 ## Hardware Requirements
 - ESP32-C3 microcontroller
@@ -16,7 +21,6 @@ ESP32-C3 based controller for 28BYJ-48 stepper motor with NTP time synchronizati
 - 5V power supply
 
 ### Pinout
-
 ```
 Motor Driver (ULN2003):
 ┌────────────┬───────────┐
@@ -30,20 +34,39 @@ Motor Driver (ULN2003):
 │ GND        │ GND       │
 └────────────┴───────────┘
 
-Status LED: Onboard LED (GPIO 13)
-NOTE: This project uses the built-in LED on the ESP32-C3 board
+Status LEDs:
+- System Status: GPIO 13 (onboard LED)
+- NTP Status: GPIO 12
 ```
 
-### Status Codes (Onboard LED)
+### Status Indicators
 ```
-┌──────────────────┬────────────────────────────┐
-│ Pattern          │ Status                     │
-├──────────────────┼────────────────────────────┤
-│ Solid ON         │ Online, Time Sync (STD)    │
-│ Double Blink/2s  │ Online, Time Sync (DST)    │
-│ Slow Blink (1s)  │ Offline, Time Keeping      │
-│ Fast Blink (0.2s)│ No Time Sync              │
-└──────────────────┴────────────────────────────┘
+System LED (GPIO 13):
+┌──────────────────┬────────────────────────┐
+│ Pattern          │ Status                 │
+├──────────────────┼────────────────────────┤
+│ Solid ON         │ Standard Time          │
+│ Blink 2x/sec     │ DST Active            │
+│ Blink 1x/2sec    │ No WiFi Connection    │
+└──────────────────┴────────────────────────┘
+
+NTP LED (GPIO 12):
+┌──────────────────┬────────────────────────┐
+│ Pattern          │ Status                 │
+├──────────────────┼────────────────────────┤
+│ Blink 1x/sec     │ NTP Sync Success      │
+│ Fast Blink       │ NTP Sync Failed       │
+└──────────────────┴────────────────────────┘
+```
+
+### Serial Output
+```
+115200 baud rate
+- Boot confirmation
+- WiFi connection status
+- NTP sync attempts and results
+- Current time (HH:MM:SS)
+- Time source (NTP/Internal)
 ```
 
 ## Software Dependencies
@@ -59,25 +82,33 @@ NOTE: This project uses the built-in LED on the ESP32-C3 board
 
 ## Setup
 1. Install Arduino IDE
-2. Add ESP32 board URL in preferences
+2. Add ESP32 board support URL in preferences
 3. Install required libraries
 4. Board settings:
    - Board: "ESP32C3 Dev Module"
-   - Upload Speed: 921600
+   - Flash Mode: "DIO"
+   - Upload Speed: 460800
    - Flash Size: 4MB
-   - Partition: Default 4MB with spiffs
-   - Flash Mode: DIO
+   - Partition: Default
+
 ## Configuration
 ```cpp
 // WiFi Settings
 const char* ssid = "YOUR_WIFI_SSID";
 const char* password = "YOUR_WIFI_PASSWORD";
-const char* ntpServer = "YOUR_LOCAL_NTP_SERVER";
+const char* ntpServer = "132.163.96.1";  // time.nist.gov
 
 // Timezone (Example: US Eastern)
 TimeChangeRule EDT = {"EDT", Second, Sun, Mar, 2, -240};  // UTC-4h
 TimeChangeRule EST = {"EST", First, Sun, Nov, 2, -300};   // UTC-5h
 ```
+
+## Operation
+- Auto-connects to WiFi on boot
+- Syncs with NTP server hourly when online
+- Maintains time internally when offline
+- Automatically adjusts for DST
+- Updates motor position every 30ms for 2 RPM
 
 ## License
 MIT License
